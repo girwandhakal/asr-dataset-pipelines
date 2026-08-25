@@ -1,0 +1,26 @@
+# Conda environment for asr-dataset-pipelines.
+#
+# Create it with:
+#   conda env create -f envs/environment.yml
+#
+# Then activate it with:
+#   conda activate asr-dataset-pipelines
+#
+# To update after this file changes:
+#   conda env update -f envs/environment.yml --prune
+name: asr-dataset-pipelines
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pandas
+  - scipy
+  - openpyxl
+  - xlsxwriter
+  - requests
+  - selenium
+  - tqdm
+  - ffmpeg
+  - pip
+  - pip:
+      - redivis

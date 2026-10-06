@@ -32,3 +32,6 @@ env/
 Thumbs.db
 desktop.ini
 *~
+
+# Local audio archive
+asr-media.zip

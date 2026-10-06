@@ -18,7 +18,12 @@ REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 OFFICE_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 TIMESTAMP = re.compile(r"\x15(\d+)_(\d+)\x15")
 SPEAKER = re.compile(r"^\*([^:]+):\s*(.*)$")
-FIELDS = ["corpus", "filepath", "start_seconds", "end_seconds", "utterance"]
+FIELDS = ["corpus", "filepath", "start_seconds", "end_seconds", "raw_utterance", "utterance"]
+
+try:
+    from .ground_truth import clean_ground_truth
+except ImportError:
+    from ground_truth import clean_ground_truth
 
 # The workbook's "age_months" column is not consistently in months: some
 # corpora's upstream metadata source reports age in days instead, and both
@@ -241,6 +246,11 @@ def _seconds(milliseconds: str) -> str:
     return value or "0"
 
 
+def _clean_utterance(text: str) -> str:
+    """Lowercase a CHAT utterance and strip its annotation codes."""
+    return clean_ground_truth(text)
+
+
 def _read_utterances(
     transcript: Path,
     corpus: str,
@@ -267,13 +277,15 @@ def _read_utterances(
             counts["untimestamped_utterances"] += 1
             log.append(f"SKIP utterance (no timestamp): {relative}:{line_number}")
             continue
+        utterance = TIMESTAMP.sub("", match.group(2)).strip()
         rows.append(
             {
                 "corpus": corpus,
                 "filepath": relative,
                 "start_seconds": _seconds(timestamp.group(1)),
                 "end_seconds": _seconds(timestamp.group(2)),
-                "utterance": TIMESTAMP.sub("", match.group(2)).strip(),
+                "raw_utterance": utterance,
+                "utterance": _clean_utterance(utterance),
             }
         )
     return rows

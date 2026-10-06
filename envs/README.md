@@ -1,8 +1,7 @@
 # Environment
 
-One-step conda setup for this repository, as an alternative to installing
-[requirements.txt](../requirements.txt) into an environment you manage
-yourself.
+One-step conda setup for this repository. This is the supported way to
+install the pipeline's dependencies.
 
 ```powershell
 conda env create -f envs/environment.yml

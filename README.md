@@ -77,9 +77,8 @@ The media stage completes the ASR dataset:
 - A TalkBank account with access to the CHILDES transcript and media data you
   intend to use
 
-Python dependencies are listed in [`requirements.txt`](requirements.txt). To
-install everything (including `ffmpeg` and Python itself) in one step with
-conda instead, see [`envs/`](envs/README.md).
+Python dependencies and `ffmpeg` are installed together with conda; see
+[`envs/`](envs/README.md).
 
 TalkBank states that CHILDES transcript and media data generally require users
 to sign in or register before downloading or browsing the data. Some corpora
@@ -89,29 +88,32 @@ restricted data.
 
 ## Installation
 
-From the repository root, create and activate a virtual environment:
+From the repository root, create and activate the conda environment. This
+installs Python 3.10, all Python dependencies, and `ffmpeg` in one step --
+see [`envs/`](envs/README.md) for details.
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+conda env create -f envs/environment.yml
+conda activate asr-dataset-pipelines
 ```
 
-If PowerShell prevents activation, either allow scripts for the current user
-or run the Python executable directly from `.venv`.
+Update the environment after `envs/environment.yml` changes with:
 
-### Install ffmpeg
+```powershell
+conda env update -f envs/environment.yml --prune
+```
+
+### Verify ffmpeg
 
 The media downloader invokes the `ffmpeg` command to create the final clips.
-Install ffmpeg separately and verify that it is on PATH:
+The conda environment installs it for you; verify it is on PATH:
 
 ```powershell
 ffmpeg -version
 ```
 
-If `ffmpeg` is installed elsewhere, pass its executable path when running the
-standalone media downloader with `--ffmpeg`.
+If you need to use a different ffmpeg build, pass its executable path when
+running the standalone media downloader with `--ffmpeg`.
 
 ## Prepare your TalkBank data
 
@@ -528,3 +530,25 @@ downloader with `--ffmpeg path/to/ffmpeg`.
 - [CLAN manual](https://talkbank.org/0info/manuals/CLAN.pdf)
 - [TalkBank citation rules](https://talkbank.org/0share/citation.html)
 - [TalkBank ground rules](https://talkbank.org/0share/rules.html)
+
+
+## Final ground-truth handoff
+
+`data/media/media_download_report.csv` is the authoritative clip/reference CSV.
+`utterance` is final cleaned ground truth; `raw_utterance` preserves CHAT text.
+`utterance_id` identifies the clip and `audio_path` is relative to `data/media`,
+so the file works on both Windows and HPC. GenSEC consumes only rows with
+a nonempty `utterance` and `audio_path`, without editing the reference.
+Rows with empty cleaned references remain visible and are skipped by GenSEC. Cleaning preserves scoped words, clipped forms,
+compound words and repetitions, and excludes CHAT fillers/fragments/events,
+unintelligibility markers, and unspoken forms. Nasal hum spellings use `mm`.
+
+To finalize an existing report without downloading or changing audio, run
+`python src/media_pipeline/ground_truth.py`. A one-time
+`media_download_report.before_ground_truth_v1.csv` backup preserves the old CSV.
+The media downloader finalizes its report automatically on future runs.
+
+MLU balancing selects children and transcripts; timestamp extraction rereads
+selected CHAT transcripts. It does not establish an utterance-level bijection
+with the Redivis balancing table. Final MLU balance should be checked on the
+retained reference/audio rows before reporting it as an analysis-sample property.

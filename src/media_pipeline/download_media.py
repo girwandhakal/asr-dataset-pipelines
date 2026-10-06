@@ -41,6 +41,11 @@ import pandas as pd
 import requests
 from tqdm.auto import tqdm
 
+try:
+    from .ground_truth import finalize_rows, REPORT_COLUMNS
+except ImportError:
+    from ground_truth import finalize_rows, REPORT_COLUMNS
+
 
 DEFAULT_MASTER_FILE = Path(__file__).resolve().parents[2] / "data" / "childes_talkbank_master_file.xlsx"
 DEFAULT_MEDIA_ROOT = "https://media.talkbank.org/childes"
@@ -255,6 +260,7 @@ def load_manifest(path: Path) -> list[dict[str, object]]:
                     "start_seconds": start,
                     "end_seconds": end,
                     "utterance": row.get("utterance", ""),
+                    "raw_utterance": row.get("raw_utterance", row.get("utterance", "")),
                 }
             )
     return rows
@@ -891,11 +897,14 @@ def download_media(
 
     report_path = output_dir / "media_download_report.csv"
     if report:
-        fields = sorted({key for row in report for key in row})
-        with report_path.open("w", newline="", encoding="utf-8") as handle:
+        report = finalize_rows(report, output_dir)
+        fields = REPORT_COLUMNS
+        temporary_report = report_path.with_name(report_path.name + ".tmp")
+        with temporary_report.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fields)
             writer.writeheader()
-            writer.writerows(report)
+            writer.writerows({key: row.get(key, "") for key in REPORT_COLUMNS} for row in report)
+        temporary_report.replace(report_path)
     counts = pd.Series([row["status"] for row in report]).value_counts().to_dict() if report else {}
     print(f"Manifest segments: {len(manifest_rows):,}")
     print(f"Transcript media groups: {len(grouped):,}")

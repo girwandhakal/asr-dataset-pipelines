@@ -9,7 +9,11 @@ OUTPUT_DIR = ROOT / "data" / "processed"
 RAW_DIR = ROOT / "data" / "raw"
 
 GROUP_MAP = {"TD": "TD", "LT": "LT", "SLI": "LT"}
-EXCLUDED_CORPORA = set()
+EXCLUDED_CORPORA = {"MacWhinney"}
+TRANSCRIPTS_DIR = ROOT / "data" / "transcripts"
+CAP_CENTER = "mean"
+CAP_STANDARD_DEVIATIONS = 3
+SAMPLING_SEED = 42
 
 SOURCE_COLUMNS = [
     "transcript_path", "manifest_new_id", "language", "media_type",
@@ -19,10 +23,4 @@ SOURCE_COLUMNS = [
 TRANSCRIPT_VARIABLES = [
     "id", "corpus_name", "language", "date", "filename", "target_child_name",
     "target_child_age", "target_child_sex", "pid",
-]
-
-UTTERANCE_VARIABLES = [
-    "id", "transcript_id", "gloss", "speaker_code", "speaker_role",
-    "num_morphemes", "num_tokens", "target_child_name", "target_child_age",
-    "target_child_sex", "corpus_name",
 ]

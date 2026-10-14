@@ -1,554 +1,179 @@
-﻿# CHILDES ASR Dataset Pipeline
+# CHILDES ASR dataset pipeline
 
-This repository builds a complete child-speech dataset for automatic speech
-recognition (ASR) experiments from
-[TalkBank CHILDES](https://talkbank.org/childes/). It handles the dataset
-compilation workflow end to end: selecting TalkBank records, matching
-transcript and utterance data, calculating child-level statistics, balancing
-the TD and language-disordered groups by mean length of utterance (MLU),
-creating a timestamped utterance manifest, downloading linked TalkBank media,
-and cutting the final audio clips used by ASR experiments.
+Build a reproducible child-speech dataset from a TalkBank search export, Redivis
+transcript metadata, CHAT archives and linked TalkBank media.
 
-The goal is not only to create a transcript manifest. The final result is a
-reproducible, MLU-balanced child-speech dataset containing the metadata,
-utterance selections, timestamps, and audio clips needed for ASR training,
-validation, or evaluation.
-
-The complete dataset workflow is:
-
-```text
-TalkBank search export
-        |
-        v
-Preprocessing: clean, match, filter, summarize, and balance candidates
-        |
-        v
-Media: extract CHAT archives, build utterance manifest, download media,
-       and create timestamped 16-kHz mono MP3 clips
+```mermaid
+flowchart TD
+    A[Master spreadsheet + Redivis transcript metadata] --> B[Match local CHAT transcripts]
+    B --> C[Resolve child identities and exclude ambiguous records / MacWhinney]
+    C --> D[Extract usable timestamped target-child utterances]
+    D --> E[Calculate cross-sectional counts and longitudinal cap]
+    E --> F[Select complete longitudinal transcripts under the cap]
+    F --> G[Compute child-level word MLU and balance LT / TD]
+    G --> H[Export exactly the retained utterance rows]
+    H --> I[Reuse or download audio clips]
+    I --> J[Final audio/reference CSV for GenSEC]
 ```
 
-The overall runner is [`src/main.py`](src/main.py). It runs preprocessing
-before media processing, so a new master file can be used to compile a new
-dataset with the same processing and balancing rules.
+## Setup and inputs
 
-## What the pipeline produces
-
-The final ASR dataset is assembled from four connected components:
-
-1. **Selected TalkBank records** from the master search export.
-2. **Cleaned and MLU-balanced candidate and utterance tables** for choosing
-   the participants and utterances included in the dataset.
-3. **Timestamped utterance-manifest rows** linking each selected utterance to
-   its source transcript and media interval.
-4. **Audio clips** extracted from TalkBank media for the selected utterances.
-
-The preprocessing stage:
-
-- reads the TalkBank search export, called the **master file** in this project;
-- matches selected transcripts to CHILDES transcript and utterance tables;
-- keeps child-speaker utterances and attaches transcript and participant
-  metadata;
-- calculates utterance and MLU-related statistics;
-- creates one candidate row per child;
-- applies the MacWhinney age restriction used by this project;
-- balances the LT and TD candidate groups by mean length of utterance so the
-  ASR dataset is less confounded by group-level language-production
-  differences; and
-- writes cleaned tables, balancing diagnostics, and an Excel workbook.
-
-The media stage completes the ASR dataset:
-
-- extracts downloaded TalkBank transcript ZIP archives;
-- reads local CHAT (`.cha`) transcripts;
-- finds timestamped child utterances;
-- writes an utterance-level manifest;
-- derives each corpus's TalkBank collection from the master file, so no corpus
-  names are hardcoded anywhere in the code;
-- locates and downloads the linked TalkBank media; and
-- cuts the requested intervals into mono 16-kHz MP3 clips.
-
-## Requirements
-
-### Software
-
-- Python 3.10 or newer
-- Google Chrome, needed for interactive TalkBank login
-- `ffmpeg`, available on your system PATH
-- A TalkBank account with access to the CHILDES transcript and media data you
-  intend to use
-
-Python dependencies and `ffmpeg` are installed together with conda; see
-[`envs/`](envs/README.md).
-
-TalkBank states that CHILDES transcript and media data generally require users
-to sign in or register before downloading or browsing the data. Some corpora
-or media may have additional access restrictions. Review the
-[CHILDES access levels](https://talkbank.org/childes/access.html) before using
-restricted data.
-
-## Installation
-
-From the repository root, create and activate the conda environment. This
-installs Python 3.10, all Python dependencies, and `ffmpeg` in one step --
-see [`envs/`](envs/README.md) for details.
+Create the environment, including ffmpeg:
 
 ```powershell
 conda env create -f envs/environment.yml
 conda activate asr-dataset-pipelines
 ```
 
-Update the environment after `envs/environment.yml` changes with:
+1. Export a [TalkBank CHILDES search](https://talkbank.org/0info/DB/) to
+   `data/childes_talkbank_master_file.xlsx`. The study's search used English,
+   Clinical-Eng/Eng-NA/Eng-UK, ages 60–108 months and TD/LT/SLI groups.
+   Positional exports and the named columns in `config.py:SOURCE_COLUMNS`
+   are supported. This workbook selects recordings; its ID column is preserved
+   as `manifest_new_id`, not trusted as speaker identity.
+2. Download the relevant corpus transcript ZIPs from TalkBank and place them
+   in `data/transcripts/<Corpus>.zip`. Extraction runs before preprocessing;
+   already extracted directories are reused.
+3. Grant your Redivis account data access to `datapages/childes-db`. The first
+   uncached run retrieves the `transcript` table with interactive Redivis login.
+   Later runs reuse `data/raw/redivis_transcripts.csv`. Use `--refresh-data`
+   to refresh that metadata. The old multi-GB utterance cache is not needed:
+   the authoritative utterance text, timestamps and word counts come from CHAT.
+4. For new media, sign into TalkBank when Chrome opens or supply exported
+   cookies with `--cookies-file`. Original transcript archives are never deleted.
 
-```powershell
-conda env update -f envs/environment.yml --prune
-```
+TalkBank access and corpus restrictions still apply. Consult the
+[access levels](https://talkbank.org/childes/access.html),
+[ground rules](https://talkbank.org/0share/rules.html) and
+[citation requirements](https://talkbank.org/0share/citation.html).
 
-### Verify ffmpeg
-
-The media downloader invokes the `ffmpeg` command to create the final clips.
-The conda environment installs it for you; verify it is on PATH:
-
-```powershell
-ffmpeg -version
-```
-
-If you need to use a different ffmpeg build, pass its executable path when
-running the standalone media downloader with `--ffmpeg`.
-
-## Prepare your TalkBank data
-
-### 1. Create or log in to a TalkBank account
-
-Go to [TalkBank](https://talkbank.org/) and log in. If you do not have an
-account, register and confirm the registration email. Then open the
-[CHILDES database](https://talkbank.org/childes/).
-
-### 2. Search the CHILDES database
-
-Open the [TalkBankDB database search](https://talkbank.org/0info/DB/) and enter
-the fields for the population you want to include. The search criteria used
-for the dataset associated with this repository were:
-
-| Field | Value |
-| --- | --- |
-| Corpora | `clinical-eng`, `eng-na`, `eng-uk` |
-| Language | `eng` |
-| Media | `audio` and/or `video` |
-| Age | `60` to `108` months |
-| Group type | `TD`, `SLI`, `LT` |
-
-
-### 3. Download the search results
-
-Run the search and download/export the resulting transcript list. In this
-project, that downloaded spreadsheet is the **master file**. Place it at:
-
-```text
-data/childes_talkbank_master_file.xlsx
-```
-
-If your downloaded file has a different name, rename or copy it to that exact
-path. The preprocessing code supports the original positional workbook layout
-and a named-column layout. The selection must provide transcript paths and
-child/group identifiers. The important fields are:
-
-```text
-transcript_path
-manifest_new_id   (or new_id / child_id)
-language
-media_type
-recording_date_raw
-pid
-design
-activity
-source_group      (or group)
-```
-
-The workbook is an input selection file; it is not the final utterance
-manifest.
-
-#### How the corpus names are read from the master file
-
-Both stages take the corpus names from the transcript-path column rather than
-from a hardcoded list, so pasting an updated master file is all that is needed
-to add or remove a corpus. TalkBank writes those paths as
-`childes/<collection>/<corpus>/<subfolders>/<record>`, for example:
-
-```text
-childes/Clinical-Eng/EllisWeismer/LT/66conv/11005
-childes/Eng-NA/OCSC/8/8040
-```
-
-The third component is the corpus (`EllisWeismer`, `OCSC`) and the second is
-the TalkBank collection it lives in (`Clinical-Eng`, `Eng-NA`). Preprocessing
-uses the corpus to group and match records; the media stage additionally uses
-the collection to build the download URL
-`https://media.talkbank.org/childes/<collection>/<corpus>/...`.
-
-A corpus that appears in the manifest but not in the master file has no known
-collection, so its clips are skipped and reported. A leading `childes/`
-component is optional, and a header row is ignored if the export has one.
-
-### 4. Download the transcript archives
-
-The search export identifies the records, but the media pipeline also needs
-the corresponding CHAT transcript archives. Download the transcript ZIP files
-from the relevant TalkBank/CHILDES corpus pages and place the ZIP files in:
-
-```text
-data/transcripts/
-```
-
-For example:
-
-```text
-data/transcripts/ENNI.zip
-data/transcripts/Forrester.zip
-data/transcripts/MacWhinney.zip
-```
-
-The archive name should identify the corpus. The pipeline extracts each ZIP
-into a folder with the same stem, for example `ENNI.zip` into
-`data/transcripts/ENNI/`. Existing extracted folders are skipped on later
-runs.
-
-TalkBank's CLAN documentation describes the same general process: choose a
-corpus, use its transcript-download link, and unzip the downloaded archive if
-it was not automatically extracted. See the
-[CLAN download instructions](https://talkbank.org/0info/manuals/CLAN.pdf).
-
-### 5. Sign in to Redivis for the CHILDES tables
-
-The preprocessing stage retrieves the CHILDES transcript and utterance tables
-from Redivis. The code uses this Redivis resource directly:
-
-```text
-Organization: datapages
-Dataset:     childes-db
-Tables:      transcript, utterance
-```
-
-Create a Redivis account at [Redivis](https://redivis.com/) using an
-institutional account, Google account, or passwordless login. Then search for
-the `childes-db` dataset under the `datapages` organization and open it. If
-Redivis shows an access or membership request, complete that request and make
-sure your account has **Data** access, not only Metadata access.
-
-If you want to verify access in the Redivis web interface, click **Analyze in
-workflow** or **Add to workflow** on the `childes-db` dataset page and inspect
-the `transcript` and `utterance` tables. This workflow step is optional for
-this repository: the local code directly references `datapages/childes-db` and
-does not require a particular Redivis workflow. Do not upload the tables to a
-new dataset and do not add CSV files to this repository.
-
-When the pipeline is run from a local computer, the Redivis Python client uses
-an interactive browser/OAuth login the first time it needs the tables. Follow
-the printed Redivis authentication instructions and authorize the client.
-Redivis documents API tokens for unattended services; an API token is not
-needed for this interactive pipeline workflow.
-
-After the first successful retrieval, the pipeline automatically writes local
-cache files to:
-
-```text
-data/raw/redivis_transcripts.csv
-data/raw/redivis_utterances.csv
-```
-
-These caches are generated by the pipeline; users do not need to prepare them
-manually. On later runs, the cached CSV files are reused automatically.
-
-Use `--refresh-data` when you want the pipeline to authenticate with Redivis
-again and replace the cached tables with fresh copies:
-
-```powershell
-python src/main.py --refresh-data
-```
-
-The repository's `.env.local` file is intentionally not documented with its
-secret values and should not be committed or shared. The current pipeline
-does not require a Redivis API token or read `TALKBANK_PASSWORD` directly;
-TalkBank media authentication is handled through an interactive browser login
-or an exported cookie file.
-
-## Run the complete pipeline
-
-From the repository root:
+## Run
 
 ```powershell
 python src/main.py
+python src/main.py --cookies-file path/to/cookies.json
+python src/main.py --reuse-only
 ```
 
-When media downloads are needed and no cookie file is supplied, the pipeline
-opens Chrome. Log in to TalkBank in that browser window, return to the
-terminal, and press Enter when prompted.
+`--reuse-only` performs the full selection/export using existing local audio,
+without browser login or network access. It returns exit code 2 if selected
+clips are missing; missing rows have no usable audio path and cannot enter GenSEC.
+Rerun normally with TalkBank access to complete them. Existing clips are reused
+at their existing paths; canonical child identities are stored in metadata.
+Old clips and folders remain intact; only report rows define the current dataset.
 
-### Common run options
-
-Refresh the automatically generated Redivis caches:
+The cap settings are explicit and configurable:
 
 ```powershell
-python src/main.py --refresh-data
+python src/main.py --cap-center mean --cap-sd 3 --seed 42
+python src/main.py --cap-center median --cap-sd 3 --seed 42
 ```
 
-Use an exported browser cookie file instead of interactive login:
+Default: `floor(cross-sectional mean + 3 × cross-sectional sample SD)`.
+The meeting did not settle mean versus median; mean is the configurable
+implementation default. The actual threshold is calculated for each run,
+never copied from an illustrative example.
 
-```powershell
-python src/main.py --cookies-file path/to/talkbank-cookies.json
-```
-
-Plan and validate media work without creating audio clips:
-
-```powershell
-python src/main.py --dry-run
-```
-
-Options can be combined:
-
-```powershell
-python src/main.py --refresh-data --cookies-file path/to/talkbank-cookies.json
-```
-
-Both runners read the master file from its standard location,
-`data/childes_talkbank_master_file.xlsx`. To read it from somewhere else, or
-to add collections for corpora the master file does not cover, run the
-standalone downloader described below with `--master-file` or
-`--collection-map`.
-
-Run the overall pipeline as a module:
-
-```powershell
-python -m src.main
-```
-
-## Run one stage only
-
-Preprocessing only:
+Individual stages:
 
 ```powershell
 python src/preprocessing_pipeline/main.py
+python src/media_pipeline/main.py --reuse-only
+python -m unittest discover -s tests -v
 ```
 
-Preprocessing with fresh Redivis tables:
+## Child identity
 
-```powershell
-python src/preprocessing_pipeline/main.py --refresh-data
-```
+Child IDs are strings, namespaced by corpus. Recording IDs, source PIDs and
+original master IDs remain available separately. Source design labels are
+preserved; the validated design controls reference counting and sampling.
 
-Media processing only:
-
-```powershell
-python src/media_pipeline/main.py
-```
-
-Media processing with cookies or dry-run mode:
-
-```powershell
-python src/media_pipeline/main.py --cookies-file path/to/talkbank-cookies.json
-python src/media_pipeline/main.py --dry-run
-```
-
-The media downloader can also be run on its own, which is the only way to
-reach its full option set:
-
-```powershell
-python src/media_pipeline/download_media.py --master-file path/to/master.xlsx
-python src/media_pipeline/download_media.py --collection-map path/to/collections.json
-python src/media_pipeline/download_media.py --ffmpeg path/to/ffmpeg.exe
-```
-
-`--collection-map` takes a JSON object of `{"Corpus": "Collection"}` entries
-that are merged over the mapping derived from the master file. It is only
-needed when the master file itself cannot supply a corpus's collection.
-
-Each script supports `--help`.
-
-## Output layout
-
-After a successful run, the important outputs are:
-
-```text
-data/
-|-- childes_talkbank_master_file.xlsx        # TalkBank search export (input)
-|-- media/
-|   |-- Corpus/GROUP/child_id/*.mp3           # Final timestamped MP3 clips
-|   `-- media_download_report.csv             # Per-clip download outcomes
-|-- out/
-|   |-- manifest.log                          # Transcript/utterance skip log
-|   `-- manifest_summary.txt                  # Human-readable manifest report
-|-- processed/
-|   |-- all_candidate_table.csv               # Candidates before balancing
-|   |-- all_candidate_table_mlu_balanced.csv  # Candidates after balancing
-|   |-- all_utterances_clean.csv              # Cleaned utterances before balancing
-|   |-- all_utterances_clean_mlu_balanced.csv # Utterances for retained candidates
-|   |-- mlu_balance_removal_log.csv           # TD removals during balancing
-|   |-- mlu_balance_summary.csv               # Before/after balance statistics
-|   |-- mlu_balancing_results.xlsx            # Combined balancing workbook
-|   `-- utterance_manifest.csv                # Timestamped utterance manifest
-|-- raw/
-|   |-- redivis_transcripts.csv               # Cached transcript table
-|   `-- redivis_utterances.csv                # Cached utterance table
-`-- transcripts/
-    |-- CorpusName.zip                        # Downloaded TalkBank archive
-    `-- CorpusName/                           # Extracted CHAT files
-```
-
-The timestamped manifest contains the rows used to request media clips. The
-balancing workbook contains candidate and utterance tables used to determine
-which records are retained.
-
-### Reading the media download report
-
-Every requested clip gets one row in `data/media/media_download_report.csv`,
-and the run prints the same tally as `Status counts`:
-
-| Status | Meaning |
+| Corpus | Participant key / decision |
 | --- | --- |
-| `created` | The clip was downloaded and cut on this run. |
-| `already_exists` | The clip was already on disk and was left alone. |
-| `planned` | `--dry-run` only: the media was located but no clip was cut. |
-| `missing_media` | The media file could not be found or reached on TalkBank. |
-| `skipped` | The corpus is not in the master file, or the row has no match in the balancing workbook. |
-| `error` | Download or ffmpeg conversion failed for that clip. |
+| EHS | Complete four-digit basename, including zeros |
+| EllisWeismer | Complete five-digit basename |
+| Rescorla | Remove the directory's known age suffix; preserve participant digits |
+| HSLLD | Three-character participant prefix in standard filenames; irregular names require review |
+| Weist | Child directory |
+| Braunwald | Constant `Braunwald::laura` |
+| Forrester | Constant `Forrester::ella`; classified longitudinal |
+| Gleason | Child-name stem across Mother/Father/Dinner sessions |
+| Gelman | Substudy plus participant stem; unseen substudies require review |
+| ENNI, OCSC, POLER, Nippold | Complete participant stem |
+| MacWhinney | Configurably excluded: participant mapping unresolved at the meeting |
+| Sprott | Excluded pending verified speaker mapping; no explicit single target child |
 
-The media stage exits with status `2` when any row is `missing_media`,
-`skipped`, or `error`, and `0` otherwise. Reruns are safe and resumable:
-`already_exists` rows are detected before any network request, so a rerun only
-retries the clips that did not complete.
+ENNI `523` is held for review because the archive reuses that number across
+TD and SLI. Conflicting birthdates, sex, analysis group or design exclude the
+affected child from modeling. Identical birthdates do not merge different
+codes: twins may share a birthday. Unknown corpora fail closed until a rule is
+validated. All decisions and reasons are exported in the participant mapping.
 
-## How balancing works
+## Utterance pool, capping and MLU
 
-The preprocessing code maps source groups as follows:
+Only an explicit `CHI` or `Target_Child` speaker is accepted. CHAT continuation
+lines are joined. A usable utterance has exactly one timestamp interval,
+nonnegative start, increasing end, and nonempty cleaned reference text.
+Excluded turns are logged. The same rows drive counts, capping, MLU and clips.
 
-```text
-TD  -> TD
-LT  -> LT
-SLI -> LT
-```
+The cap uses per-child counts from cross-sectional participants in both groups.
+For each longitudinal child, recordings are considered together. Children under
+the cap keep all eligible recordings. For children over it, transcript paths are
+sorted, shuffled with a deterministic seed derived from the run seed and child
+ID, and greedily retained when the complete transcript fits the remaining budget.
+This avoids automatically preferring early visits. It is reproducible, not an
+optimal subset search. A transcript larger than the cap is excluded and logged;
+it is never silently truncated. A child with no fitting transcript is excluded.
 
-It summarizes child utterances into candidate-level statistics and uses MLU
-to reduce the difference between LT and TD. The balancing procedure removes
-TD candidates at the most extreme MLU values while the removal improves the
-absolute group mean difference. It stops when the groups are no longer
-significantly different at the configured threshold, when the minimum TD
-group size would be reached, when another removal would not improve the
-difference, or when the removal limit is reached.
+MLU is consistently **MLU-w**, the mean number of cleaned words per utterance.
+It is recomputed after capping by pooling the child's retained utterances.
+Group means give every child one observation. The legacy pipeline mixed
+morpheme counts, token counts and word-count fallbacks; its old MLU values and
+balancing results are not directly comparable.
 
-MacWhinney candidates are additionally retained only when their derived mean
-age is between 5 and 9 years, inclusive. Review
-`data/processed/mlu_balance_summary.csv` and
-`data/processed/mlu_balance_removal_log.csv` before using the final candidate
-set in an experiment.
+TD remains TD; LT and SLI form the analysis group LT, with original labels
+preserved. Balancing removes one extreme TD child at a time only when this
+reduces the absolute group mean difference. It stops at Welch p ≥ .05,
+20 TD children, no improvement, or 1,000 removals. All recordings of a removed
+child leave together. Report the actual mean difference as well as p;
+non-significance is not evidence of equivalence.
 
-## Reproducibility and data-use notes
+## Outputs
 
-TalkBank content can change. Record the following for every dataset release:
+All selection outputs are under `data/processed/`:
 
-- the date the TalkBank search was run;
-- the exact search criteria;
-- the downloaded master-file name and checksum;
-- the transcript ZIP archives used and their checksums;
-- whether cached or refreshed Redivis tables were used;
-- the pipeline command and options; and
-- the resulting balancing summary.
+| File | Meaning |
+| --- | --- |
+| `all_utterances_clean.csv` | Resolved, eligible utterances before capping / balancing |
+| `all_candidate_table.csv` | One child per row before capping / balancing |
+| `all_utterances_clean_mlu_balanced.csv` | Final selected utterance rows, with timestamps and child IDs |
+| `all_candidate_table_mlu_balanced.csv` | Final participant summary: design, group, MLU, ages and counts |
+| `mlu_balancing_results.xlsx` | Final tables, balancing diagnostics and transcript decisions |
+| `mlu_balance_summary.csv`, `mlu_balance_removal_log.csv` | Group comparisons and whole-child removals |
+| `participant_transcript_mapping.csv` | Every master transcript, identity, retained status and exclusion reason |
+| `utterance_exclusions.csv` | Invalid / untimestamped / empty CHAT turns |
+| `utterance_cap.json` | Reference distribution, formula, sample SD convention, threshold and seed |
+| `longitudinal_selection.csv` | Whole-transcript counts and cap / balancing decisions |
+| `input_transcript_counts.csv` | Master counts before corpus / identity exclusions |
+| `dataset_stage_summary.csv` | Corpus / group / design counts after exclusions, capping and balancing |
+| `child_utterance_counts.csv`, `transcript_utterance_counts.csv` | Distributions underlying the plots |
+| `child_utterance_distribution.png`, `transcript_utterance_distribution.png` | Diagnostic histograms |
+| `dataset_validation.json` | Automated identity, cap, count and timestamp checks |
+| `media_validation.json` | Actual audio handoff reconciled against selected rows |
+| `run_metadata.json` | Input SHA-256 checksums, run time and methodology settings |
+| `utterance_manifest.csv` | Exact selected rows passed to media; no rereading that reintroduces turns |
 
-TalkBank recommends citing the specific corpus references listed in each
-corpus's documentation, in addition to the general CHILDES/TalkBank
-references. Review the official
-[TalkBank citation rules](https://talkbank.org/0share/citation.html) and
-[ground rules](https://talkbank.org/0share/rules.html) before distributing
-results. The ground rules also describe licensing and restrictions on use of
-TalkBank materials.
+The final handoff is **`data/media/media_download_report.csv` plus its linked MP3
+clips**. `utterance` is cleaned ground truth; `raw_utterance` preserves the source.
+The report carries canonical `child_id`, source `transcript_id`, `utterance_id`,
+corpus, group, design, timestamps and relative `audio_path`. Excluded / missing
+audio has no usable audio path. Clip identities and intervals remain stable
+when only the child assignment changes. Text cleaning remains upstream-owned.
 
-For historical reproducibility, TalkBank documents database versioning and
-date-based retrieval of previous corpus states in its
-[database versioning guidance](https://talkbank.org/0info/versions.html).
+GenSEC imports this report and paired audio. Its train/validation/test splitting
+must separately group by canonical child ID; this repository exports the needed
+identity contract but does not modify GenSEC's training code.
 
-## Troubleshooting
-
-### `Manifest is missing columns`
-
-The master file does not match one of the supported TalkBank export layouts.
-Inspect the spreadsheet headers and ensure it contains `transcript_path`, an
-ID field (`manifest_new_id`, `new_id`, or `child_id`), and `source_group`
-or `group`, along with the remaining metadata columns listed above.
-
-### Redivis authentication or access fails
-
-Install the dependencies, create or log in to a Redivis account, and confirm
-that the account has Data access to `datapages/childes-db`. Then run the
-pipeline. The Redivis client will prompt for interactive authentication and
-the pipeline will create the local caches automatically:
-
-```powershell
-python src/main.py
-```
-
-Use `--refresh-data` to replace existing caches with fresh Redivis tables.
-
-### `No corpus produced usable utterances`
-
-Check that the selected corpus names in the master file match the corpus names
-in the downloaded Redivis tables and that the required transcript and utterance
-columns are present.
-
-### `Corpus not listed in childes_talkbank_master_file.xlsx`
-
-The media stage derives each corpus's TalkBank collection from the first
-column of the master file, so a corpus that appears in the manifest but not in
-the master file has no download location and is skipped. Re-export the master
-file so it covers every selected corpus, then rerun the pipeline. The skipped
-rows are listed in `data/media/media_download_report.csv`.
-
-### Transcript files are missing
-
-Confirm that the relevant corpus ZIP archives are in `data/transcripts/` and
-that their extracted folders contain `.cha` files. Run the media stage with
-`--help` to inspect its options.
-
-
-
-### TalkBank returns a login or HTML page instead of media
-
-Authenticate again in the Chrome window, or export fresh TalkBank cookies and
-pass them with `--cookies-file`. Some corpora or media may require additional
-TalkBank approval.
-
-### `ffmpeg` is not recognized
-
-Install ffmpeg and ensure `ffmpeg -version` works in the same terminal used to
-run the pipeline. For a nonstandard installation path, run the standalone
-downloader with `--ffmpeg path/to/ffmpeg`.
-
-## Official resources
-
-- [TalkBank](https://talkbank.org/)
-- [CHILDES](https://talkbank.org/childes/)
-- [TalkBankDB database search](https://talkbank.org/0info/DB/)
-- [CHILDES access levels](https://talkbank.org/childes/access.html)
-- [CHILDES corpus index](https://talkbank.org/childes/index.html)
-- [CLAN manual](https://talkbank.org/0info/manuals/CLAN.pdf)
-- [TalkBank citation rules](https://talkbank.org/0share/citation.html)
-- [TalkBank ground rules](https://talkbank.org/0share/rules.html)
-
-
-## Final ground-truth handoff
-
-`data/media/media_download_report.csv` is the authoritative clip/reference CSV.
-`utterance` is final cleaned ground truth; `raw_utterance` preserves CHAT text.
-`utterance_id` identifies the clip and `audio_path` is relative to `data/media`,
-so the file works on both Windows and HPC. GenSEC consumes only rows with
-a nonempty `utterance` and `audio_path`, without editing the reference.
-Rows with empty cleaned references remain visible and are skipped by GenSEC. Cleaning preserves scoped words, clipped forms,
-compound words and repetitions, and excludes CHAT fillers/fragments/events,
-unintelligibility markers, and unspoken forms. Nasal hum spellings use `mm`.
-
-To finalize an existing report without downloading or changing audio, run
-`python src/media_pipeline/ground_truth.py`. A one-time
-`media_download_report.before_ground_truth_v1.csv` backup preserves the old CSV.
-The media downloader finalizes its report automatically on future runs.
-
-MLU balancing selects children and transcripts; timestamp extraction rereads
-selected CHAT transcripts. It does not establish an utterance-level bijection
-with the Redivis balancing table. Final MLU balance should be checked on the
-retained reference/audio rows before reporting it as an analysis-sample property.
+Record the master export date and criteria, input checksums, CHAT ZIP versions,
+Redivis refresh state, command, cap settings and balancing results for releases.
+TalkBank supports [historical versioning](https://talkbank.org/0info/versions.html).

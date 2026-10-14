@@ -5,6 +5,7 @@
 data/**
 !data/**/
 !data/**/.gitkeep
+data/run_history/
 
 # Local inputs and figures that are not part of the code.
 dataset-filters.png

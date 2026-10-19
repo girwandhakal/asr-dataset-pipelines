@@ -42,9 +42,9 @@ import requests
 from tqdm.auto import tqdm
 
 try:
-    from .ground_truth import finalize_rows, REPORT_COLUMNS
+    from .ground_truth import finalize_rows, DATASET_REPORT_COLUMNS
 except ImportError:
-    from ground_truth import finalize_rows, REPORT_COLUMNS
+    from ground_truth import finalize_rows, DATASET_REPORT_COLUMNS
 
 
 DEFAULT_MASTER_FILE = Path(__file__).resolve().parents[2] / "data" / "childes_talkbank_master_file.xlsx"
@@ -123,6 +123,11 @@ def browser_login(login_url: str, chrome_user_data: Path | None) -> dict[str, st
             "Browser login requires selenium. Install requirements.txt "
             "or pass --cookies-file instead."
         ) from error
+
+    # Conda's Windows package lacks a PowerShell hook for its separate manager binary.
+    manager = Path(sys.prefix) / "Scripts" / "selenium-manager.exe"
+    if not os.environ.get("SE_MANAGER_PATH") and manager.is_file():
+        os.environ["SE_MANAGER_PATH"] = str(manager)
 
     options = Options()
     if chrome_user_data is not None:
@@ -261,6 +266,7 @@ def load_manifest(path: Path) -> list[dict[str, object]]:
                     "end_seconds": end,
                     "utterance": row.get("utterance", ""),
                     "raw_utterance": row.get("raw_utterance", row.get("utterance", "")),
+                    **{key: row.get(key, "") for key in ["child_id", "transcript_id", "utterance_id", "group", "source_group", "design", "speaker_code", "clip_ordinal"]},
                 }
             )
     return rows
@@ -282,7 +288,7 @@ def load_selection_metadata(path: Path) -> dict[tuple[str, str], dict[str, str]]
         raise ValueError(f"Selection workbook is missing columns: {sorted(missing)}")
 
     child_column = next(
-        (column for column in ("new_id", "manifest_new_id", "child_id") if column in frame.columns),
+        (column for column in ("child_id", "new_id", "manifest_new_id") if column in frame.columns),
         None,
     )
     if child_column is None:
@@ -297,7 +303,7 @@ def load_selection_metadata(path: Path) -> dict[tuple[str, str], dict[str, str]]
             key = (corpus.casefold(), path_key(filename, corpus))
             record = {
                 "group": str(item["group"]).strip().upper(),
-                "child_id": clean_component(item[child_column]),
+                "child_id": str(item[child_column]).strip(),
             }
             previous = metadata.get(key)
             if previous is not None and previous != record:
@@ -632,6 +638,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--timeout", type=float, default=45)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--reuse-only", action="store_true", help="Use existing audio only; report missing clips without network access.")
     return parser
 
 
@@ -653,6 +660,7 @@ def download_media(
     timeout: float = 45,
     tmp_dir: Path | None = None,
     dry_run: bool = False,
+    reuse_only: bool = False,
 ) -> int:
     """Download and convert the requested TalkBank media clips.
 
@@ -696,8 +704,7 @@ def download_media(
     tqdm.write("Loading timestamp manifest...")
     manifest_rows = load_manifest(manifest)
     tqdm.write(f"Loaded {len(manifest_rows):,} manifest segments from {manifest}")
-    selection = load_selection_metadata(selection_workbook)
-    tqdm.write(f"Loaded selection metadata from {selection_workbook}")
+    selection = {} if all(r.get("child_id") and r.get("group") for r in manifest_rows) else load_selection_metadata(selection_workbook)
     collections = load_collection_map(master_file, collection_map, media_root)
     tqdm.write(
         f"Derived {len(collections)} corpus collections from {master_file}"
@@ -709,7 +716,8 @@ def download_media(
     for row in manifest_rows:
         corpus = str(row["corpus"])
         key = (corpus.casefold(), path_key(row["filepath"], corpus))
-        metadata = selection.get(key) or selection.get((corpus.casefold(), filename_stem(row["filepath"])))
+        metadata = ({"child_id": row["child_id"], "group": row["group"]} if row.get("child_id") and row.get("group")
+                    else selection.get(key) or selection.get((corpus.casefold(), filename_stem(row["filepath"]))))
         if metadata is None:
             report.append({**row, "status": "skipped", "reason": "No group/child metadata match in selection workbook"})
             continue
@@ -729,7 +737,7 @@ def download_media(
         corpus, filepath = group_key
         targets = []
         for ordinal, row in enumerate(rows, start=1):
-            name = clip_name(
+            name = (str(row["utterance_id"]) + ".mp3") if row.get("utterance_id") else clip_name(
                 corpus,
                 filepath,
                 float(row["start_seconds"]),
@@ -746,13 +754,39 @@ def download_media(
             targets.append((row, target))
         targets_by_group[group_key] = targets
 
+    # Keep existing audio paths; canonical child identity lives in the report metadata.
+    existing = {}
+    for directory, _, names in os.walk(output_dir):
+        for name in names:
+            if name.endswith(".mp3"):
+                existing.setdefault(name, Path(directory) / name)
+    directory_files = {}
+
+    def audio_exists(path):
+        if path.parent not in directory_files:
+            directory_files[path.parent] = ({e.name: e.stat().st_size for e in os.scandir(path.parent) if e.is_file()}
+                                            if path.parent.is_dir() else {})
+        return directory_files[path.parent].get(path.name, 0) > 0
+
+    reused = 0
+    for key, targets in targets_by_group.items():
+        resolved = []
+        for row, target in targets:
+            source = existing.get(target.name)
+            if not audio_exists(target) and source is not None and audio_exists(source):
+                target = source
+                reused += 1
+            resolved.append((row, target))
+        targets_by_group[key] = resolved
+    tqdm.write(f"Reused {reused:,} existing clips without changing audio paths")
+
     needs_download = any(
-        not target.exists() or target.stat().st_size == 0
+        not audio_exists(target)
         for targets in targets_by_group.values()
         for _, target in targets
     )
 
-    if needs_download:
+    if needs_download and not reuse_only:
         if cookies_file is not None:
             cookies = read_cookies(cookies_file)
         else:
@@ -763,7 +797,7 @@ def download_media(
         session.headers.update({"User-Agent": "child-asr-media-downloader/1.0"})
     else:
         session = None
-        tqdm.write("All requested clips already exist; skipping TalkBank login and download.")
+        tqdm.write("Reuse-only mode: skipping network access." if reuse_only else "All requested clips already exist; skipping TalkBank login and download.")
 
     transcript_items = sorted(grouped.items())
     for group_number, ((corpus, filepath), rows) in enumerate(
@@ -780,10 +814,17 @@ def download_media(
             f"({len(rows)} requested clips)"
         )
         targets = targets_by_group[(corpus, filepath)]
-        if all(target.exists() and target.stat().st_size > 0 for _, target in targets):
+        if all(audio_exists(target) for _, target in targets):
             tqdm.write("  SKIP download: all requested clips already exist")
             for row, target in targets:
                 report.append({**row, "status": "already_exists", "output": str(target)})
+            continue
+
+        if reuse_only:
+            for row, target in targets:
+                present = audio_exists(target)
+                report.append({**row, "status": "already_exists" if present else "missing_media",
+                               "output": str(target) if present else "", "reason": "" if present else "Clip not available locally; rerun with TalkBank access"})
             continue
 
         collection = collections.get(corpus)
@@ -895,15 +936,15 @@ def download_media(
             for row, target in targets:
                 report.append({**row, "status": "error", "output": str(target), "source_url": media_url, "reason": f"{type(error).__name__}: {error}"})
 
-    report_path = output_dir / "media_download_report.csv"
+    report_path = output_dir / ("media_plan.csv" if dry_run else "media_download_report.csv")
     if report:
         report = finalize_rows(report, output_dir)
-        fields = REPORT_COLUMNS
+        fields = DATASET_REPORT_COLUMNS
         temporary_report = report_path.with_name(report_path.name + ".tmp")
         with temporary_report.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fields)
             writer.writeheader()
-            writer.writerows({key: row.get(key, "") for key in REPORT_COLUMNS} for row in report)
+            writer.writerows({key: row.get(key, "") for key in fields} for row in report)
         temporary_report.replace(report_path)
     counts = pd.Series([row["status"] for row in report]).value_counts().to_dict() if report else {}
     print(f"Manifest segments: {len(manifest_rows):,}")
@@ -934,8 +975,9 @@ def main() -> int:
         timeout=args.timeout,
         tmp_dir=args.tmp_dir,
         dry_run=args.dry_run,
+        reuse_only=args.reuse_only,
     )
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -15,6 +15,7 @@ dependencies:
   - python=3.10
   - pandas
   - scipy
+  - matplotlib
   - openpyxl
   - xlsxwriter
   - requests

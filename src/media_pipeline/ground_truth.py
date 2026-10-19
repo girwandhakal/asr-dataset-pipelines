@@ -20,6 +20,8 @@ REFERENCE_VERSION = "chat_ground_truth_v1"
 REPORT_COLUMNS = ["utterance_id", "utterance", "raw_utterance", "audio_path",
                   "corpus", "group", "child_id", "filepath",
                   "start_seconds", "end_seconds", "manifest_row"]
+DATASET_REPORT_COLUMNS = REPORT_COLUMNS + ["transcript_id", "design", "source_group", "speaker_code", "status",
+                   "reason", "reference_status", "reference_exclusion_reason", "reference_cleaning_version"]
 BRACKET = re.compile(r"\[[^\[\]]*\]")
 # Match complete annotation tokens, never the + inside snow+man.
 EVENT = re.compile(r"(?<!\S)[&+]\S*")
@@ -80,7 +82,7 @@ def finalize_rows(rows: list[dict], media_dir: Path) -> list[dict]:
         row.pop("clean_utterance", None)  # one authoritative cleaned-text column
         row["reference_cleaning_version"] = REFERENCE_VERSION
         output = str(row.get("output") or row.get("audio_path") or "").strip()
-        row["utterance_id"] = PureWindowsPath(output).stem if output else ""
+        row["utterance_id"] = PureWindowsPath(output).stem if output else str(row.get("utterance_id", ""))
         row["audio_path"] = ""
         if output:
             # Reports historically contain absolute Windows paths; use their
@@ -159,12 +161,12 @@ def finalize_report(report_path: Path, media_dir: Path | None = None) -> Counter
     backup = report_path.with_name(report_path.stem + ".before_ground_truth_v1.csv")
     if not backup.exists():
         shutil.copy2(report_path, backup)
-    fields = REPORT_COLUMNS
+    fields = DATASET_REPORT_COLUMNS if any("transcript_id" in row for row in rows) else REPORT_COLUMNS
     temporary = report_path.with_name(report_path.name + ".tmp")
     with temporary.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
-        writer.writerows({key: row.get(key, "") for key in REPORT_COLUMNS} for row in rows)
+        writer.writerows({key: row.get(key, "") for key in fields} for row in rows)
     temporary.replace(report_path)
     counts = Counter(row["reference_exclusion_reason"] or "ready" for row in rows)
     print(f"Finalized ground truth: {dict(counts)}")

@@ -1,53 +1,25 @@
-# Media pipeline
+# Media processing
 
-The complete dataset workflow is orchestrated from `src/main.py`. It runs the
-preprocessing pipeline first and then this media pipeline. Run only this
-folder's stages with `python src/media_pipeline/main.py`.
+Run `python src/media_pipeline/main.py` after preprocessing, or use the full
+runner `python src/main.py`.
 
-This folder contains the scripts that prepare transcripts and download
-TalkBank media:
+1. Extract missing transcript ZIP directories.
+2. Export the exact rows from `all_utterances_clean_mlu_balanced.csv` to
+   `utterance_manifest.csv`, preserving child / transcript / utterance IDs.
+3. Reuse existing clips at their existing paths, then download and cut
+   missing intervals into mono 16-kHz MP3 when TalkBank access is available.
+4. Finalize `data/media/media_download_report.csv` as the audio/reference handoff.
 
-`main.py` is the pipeline entry point. It runs the three stages below in
-order.
+The selected CSV is authoritative; the media stage does not add other utterances
+from the retained transcripts. Original clips remain intact. Canonical IDs stay
+unchanged in metadata; only filesystem directory components are sanitized.
 
-1. `extract_transcripts.py` extracts transcript ZIP archives into
-   `data/transcripts`. Existing extracted folders are skipped.
-2. `create_manifest.py` reads the selected workbook and local `.cha` files,
-   then writes `data/processed/utterance_manifest.csv`,
-   `data/out/manifest.log`, and `data/out/manifest_summary.txt`.
-3. `download_media.py` reads `data/processed/utterance_manifest.csv`, downloads the required TalkBank
-   media, creates audio clips, and writes them under `data/media`. It learns
-   which TalkBank collection each corpus belongs to by reading the first
-   column of `data/childes_talkbank_master_file.xlsx`, where a path such as
-   `childes/Clinical-Eng/EllisWeismer/LT/66conv/11005` gives the collection
-   (`Clinical-Eng`) and the corpus (`EllisWeismer`). Corpus names are not
-   hardcoded, so pasting an updated master file is all that is needed to add a
-   corpus. Override the location with `--master-file`, or merge extra entries
-   over the derived mapping with a JSON `--collection-map`.
+Use `--cookies-file path/to/cookies.json` or interactive browser login for new
+downloads. `--reuse-only` completes available local pairs and reports missing
+audio without network access (exit 2 if incomplete). `--dry-run` plans downloads
+without encoding clips. Download locations come from the master workbook.
 
-The extraction step is also available as a function for use by the pipeline:
-
-```python
-from src.media_pipeline.extract_transcripts import extract_archives
-
-extract_archives()
-```
-
-The other steps can still be run from the repository root:
-
-```powershell
-python src/media_pipeline/create_manifest.py
-python src/media_pipeline/download_media.py --cookies-file path/to/cookies.json
-```
-
-Run the complete pipeline with:
-
-```powershell
-python src/media_pipeline/main.py --cookies-file path/to/cookies.json
-```
-
-If `--cookies-file` is omitted, the downloader opens Chrome for interactive
-TalkBank login. Use `--dry-run` to prepare the manifest and plan downloads
-without creating clips.
-
-Use `--help` on any script to see available path and authentication options.
+The report preserves raw and cleaned text, relative audio paths, child identity,
+transcript identity, study design and processing / exclusion status. GenSEC reads
+this report and its paired clips. See the root README for the input schema and
+methodology.

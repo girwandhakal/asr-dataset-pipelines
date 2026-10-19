@@ -70,8 +70,8 @@ python src/main.py --cap-center median --cap-sd 3 --seed 42
 ```
 
 Default: `floor(cross-sectional mean + 3 × cross-sectional sample SD)`.
-The meeting did not settle mean versus median; mean is the configurable
-implementation default. The actual threshold is calculated for each run,
+Mean was selected as the study rule after the meeting. The median option remains
+available for sensitivity checks. The actual threshold is calculated for each run,
 never copied from an illustrative example.
 
 Individual stages:
@@ -160,6 +160,7 @@ All selection outputs are under `data/processed/`:
 | `child_utterance_distribution.png`, `transcript_utterance_distribution.png` | Diagnostic histograms |
 | `dataset_validation.json` | Automated identity, cap, count and timestamp checks |
 | `media_validation.json` | Actual audio handoff reconciled against selected rows |
+| `run_summary.md` | Current audio readiness and cap, refreshed during audio validation |
 | `run_metadata.json` | Input SHA-256 checksums, run time and methodology settings |
 | `utterance_manifest.csv` | Exact selected rows passed to media; no rereading that reintroduces turns |
 

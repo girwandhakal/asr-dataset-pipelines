@@ -124,6 +124,11 @@ def browser_login(login_url: str, chrome_user_data: Path | None) -> dict[str, st
             "or pass --cookies-file instead."
         ) from error
 
+    # Conda's Windows package lacks a PowerShell hook for its separate manager binary.
+    manager = Path(sys.prefix) / "Scripts" / "selenium-manager.exe"
+    if not os.environ.get("SE_MANAGER_PATH") and manager.is_file():
+        os.environ["SE_MANAGER_PATH"] = str(manager)
+
     options = Options()
     if chrome_user_data is not None:
         options.add_argument(f"--user-data-dir={chrome_user_data.resolve()}")

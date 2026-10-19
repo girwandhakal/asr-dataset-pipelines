@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from src.preprocessing_pipeline.selection import child_identity, cap_longitudinal, collect_utterances
+from src.preprocessing_pipeline.selection import child_identity, cap_longitudinal, collect_utterances, validate_selection
 from src.preprocessing_pipeline.helpers import path_key
 from src.preprocessing_pipeline.build_manifest import candidate_table, balance_candidates
 from src.media_pipeline.chat import read_header, read_utterances
@@ -117,6 +117,29 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(child["number_of_transcripts"], 3)
         self.assertAlmostEqual(child["mlu"], 26 / 7)
 
+    def test_longitudinal_children_at_or_below_cap_keep_all_recordings(self):
+        data = fixture()
+        extra = data[data["child_id"].eq("X::c")].copy()
+        extra["child_id"] = "X::below"
+        extra["filepath"] = "below/" + extra["filepath"]
+        extra["transcript_id"] = "below/" + extra["transcript_id"]
+        extra["utterance_id"] = "below/" + extra["utterance_id"]
+        for size in [3, 4]:
+            with self.subTest(utterances=size):
+                child = extra.iloc[:size]
+                kept, _, stats = cap_longitudinal(pd.concat([data, child], ignore_index=True), deviations=0)
+                self.assertEqual(stats["cap"], 4)
+                self.assertEqual(set(kept.loc[kept.child_id.eq("X::below"), "utterance_id"]), set(child.utterance_id))
+
+    def test_validation_rejects_incorrect_child_counts_even_when_total_matches(self):
+        data = fixture().assign(identity_status="resolved", start_seconds=0, end_seconds=1, utterance="hello")
+        candidates = candidate_table(data)
+        self.assertTrue(all(validate_selection(data, candidates, {"cap": 8}).values()))
+        candidates.loc[candidates.child_id.eq("X::a"), "total_child_utterances"] = 7
+        candidates.loc[candidates.child_id.eq("X::c"), "total_child_utterances"] = 4
+        with self.assertRaisesRegex(ValueError, "per_child_counts_reconcile"):
+            validate_selection(data, candidates, {"cap": 8})
+
     def test_manifest_exports_exact_selected_rows(self):
         temp_root = Path(__file__).resolve().parents[1] / "data"
         with tempfile.TemporaryDirectory(dir=temp_root) as directory:
@@ -178,6 +201,14 @@ class SelectionTests(unittest.TestCase):
             self.assertTrue((old / name).exists())
             (root / "utterance_cap.json").write_text('{"cap": 4}', encoding="utf-8")
             self.assertTrue(validate_export(manifest, media))
+            self.assertIn("Missing utterances: 0", (root / "run_summary.md").read_text())
+            with manifest.open("a", encoding="utf-8", newline="") as handle:
+                csv.DictWriter(handle, fieldnames=FIELDS).writerow(row)
+            self.assertFalse(validate_export(manifest, media))
+            with manifest.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=FIELDS)
+                writer.writeheader()
+                writer.writerow(row)
             report[0]["child_id"] = "X::wrong-child"
             with (media / "media_download_report.csv").open("w", encoding="utf-8", newline="") as handle:
                 writer = csv.DictWriter(handle, fieldnames=list(report[0]))

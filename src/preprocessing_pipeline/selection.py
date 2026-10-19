@@ -173,6 +173,12 @@ def write_diagnostics(output, stages, mapping, decisions, stats):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    def save_plot(figure, name):
+        # Replace a completed image instead of truncating a plot that may be open or syncing.
+        temporary = output / ("temporary_" + name)
+        figure.savefig(temporary, dpi=160)
+        temporary.replace(output / name)
+
     summaries = [summarize(data, name) for name, data in stages.items()]
     pd.concat(summaries, ignore_index=True).to_csv(output / "dataset_stage_summary.csv", index=False)
     mapping.to_csv(output / "participant_transcript_mapping.csv", index=False)
@@ -193,7 +199,7 @@ def write_diagnostics(output, stages, mapping, decisions, stats):
     for ax in axes.flat[len(stages):]:
         ax.set_visible(False)
     fig.tight_layout()
-    fig.savefig(output / "child_utterance_distribution.png", dpi=160)
+    save_plot(fig, "child_utterance_distribution.png")
     plt.close(fig)
     pd.concat(distributions, ignore_index=True).to_csv(output / "child_utterance_counts.csv", index=False)
     final = list(stages.values())[-1]
@@ -205,7 +211,7 @@ def write_diagnostics(output, stages, mapping, decisions, stats):
     ax.set(xlabel="Utterances per transcript", ylabel="Transcripts", title="Final retained transcripts")
     ax.legend()
     fig.tight_layout()
-    fig.savefig(output / "transcript_utterance_distribution.png", dpi=160)
+    save_plot(fig, "transcript_utterance_distribution.png")
     plt.close(fig)
 
 
@@ -218,10 +224,14 @@ def validate_selection(utterances, candidates, stats):
         "corpus_namespaced_ids": all(r.child_id.startswith(r.corpus + "::") for r in candidates.itertuples()),
         "one_candidate_per_child": not candidates["child_id"].duplicated().any(),
         "one_group_per_child": utterances.groupby("child_id")["group"].nunique().eq(1).all(),
+        "one_design_per_child": utterances.groupby("child_id")["design"].nunique().eq(1).all(),
+        "nonempty_transcript_ids": utterances["transcript_id"].fillna("").astype(str).str.strip().ne("").all(),
         "macwhinney_excluded": not utterances["corpus"].isin(EXCLUDED_CORPORA).any(),
         "valid_intervals": (utterances["start_seconds"].ge(0) & utterances["end_seconds"].gt(utterances["start_seconds"])).all(),
         "nonempty_references": utterances["utterance"].str.strip().ne("").all(),
         "candidate_counts_reconcile": int(candidates["total_child_utterances"].sum()) == len(utterances),
+        "per_child_counts_reconcile": candidates.set_index("child_id")["total_child_utterances"].sort_index().equals(
+            utterances.groupby("child_id").size().sort_index()),
         "longitudinal_cap_respected": utterances[utterances["design"].eq("longitudinal")].groupby("child_id").size().le(stats["cap"]).all(),
     }
     checks = {name: bool(value) for name, value in checks.items()}

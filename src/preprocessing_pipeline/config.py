@@ -11,6 +11,7 @@ RAW_DIR = ROOT / "data" / "raw"
 GROUP_MAP = {"TD": "TD", "LT": "LT", "SLI": "LT"}
 EXCLUDED_CORPORA = {"MacWhinney"}
 TRANSCRIPTS_DIR = ROOT / "data" / "transcripts"
+# Study rule: cross-sectional mean plus three sample standard deviations.
 CAP_CENTER = "mean"
 CAP_STANDARD_DEVIATIONS = 3
 SAMPLING_SEED = 42

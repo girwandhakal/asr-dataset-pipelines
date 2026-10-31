@@ -9,6 +9,24 @@ except ImportError:
     from ground_truth import clean_ground_truth
 
 TIMESTAMP = re.compile(r"\x15(\d+)_(\d+)\x15")
+MIN_CLIP_SECONDS = 0.5
+MAX_REFERENCE_WORDS_PER_SECOND = 4.0
+LONG_SINGLE_WORD_SECONDS = 5.0
+
+
+def alignment_reason(start, end, reference):
+    """Reject intervals whose text cannot plausibly fit their timestamp."""
+    duration = end - start
+    words = len(reference.split())
+    if duration <= 0:
+        return "invalid_interval"
+    if duration < MIN_CLIP_SECONDS:
+        return "point_bullet_timestamp" if duration <= 0.1 + 1e-9 else "clip_too_short"
+    if words / duration > MAX_REFERENCE_WORDS_PER_SECOND:
+        return "impossible_speech_rate"
+    if duration > LONG_SINGLE_WORD_SECONDS and words <= 1:
+        return "long_clip_short_reference"
+    return ""
 
 
 def age_months(value):
@@ -56,7 +74,16 @@ def read_utterances(text, corpus, filepath, speaker):
             turns[-1][1] += " " + line.strip()
         else:
             turns.append([line_number, line])
-    for line_number, line in turns:
+    speaker_turns = []
+    for index, (_, line) in enumerate(turns):
+        match = re.match(r"^\*([^:]+):\s*(.*)$", line)
+        if match and match.group(1) != speaker:
+            times = TIMESTAMP.findall(match.group(2))
+            if len(times) == 1:
+                adult_start, adult_end = (int(value) / 1000 for value in times[0])
+                if adult_end > adult_start:
+                    speaker_turns.append((index, adult_start, adult_end))
+    for index, (line_number, line) in enumerate(turns):
         match = re.match(rf"^\*{re.escape(speaker)}:\s*(.*)$", line)
         if not match:
             continue
@@ -71,6 +98,13 @@ def read_utterances(text, corpus, filepath, speaker):
             reason = "invalid_interval"
         if not reason and not cleaned:
             reason = "empty_cleaned_reference"
+        if not reason:
+            reason = alignment_reason(start, end, cleaned)
+        if not reason:
+            adjacent = [turn for turn in speaker_turns if abs(turn[0] - index) == 1]
+            if any(max(start, adult_start) < min(end, adult_end)
+                   for _, adult_start, adult_end in adjacent):
+                reason = "speaker_timestamp_overlap"
         if reason:
             skipped.append(dict(corpus=corpus, filepath=filepath, line=line_number, reason=reason))
             continue

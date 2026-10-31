@@ -9,6 +9,11 @@ from collections import defaultdict
 from decimal import Decimal
 from pathlib import Path
 
+try:
+    from .chat import alignment_reason
+except ImportError:
+    from chat import alignment_reason
+
 
 FIELDS = ["corpus", "filepath", "start_seconds", "end_seconds", "raw_utterance", "utterance",
           "child_id", "transcript_id", "utterance_id", "group", "source_group", "design", "speaker_code", "clip_ordinal"]
@@ -322,8 +327,17 @@ def create_selected_manifest(workbook, output, log_path, summary_path):
     if len({row["utterance_id"] for row in rows}) != len(rows):
         raise ValueError("Selected utterance IDs are not unique")
     by_file = defaultdict(list)
+    alignment_drops = []
+    selected_rows = []
     for row in rows:
+        reason = alignment_reason(float(row["start_seconds"]), float(row["end_seconds"]), row["utterance"])
+        if reason:
+            alignment_drops.append((row, reason))
+            continue
+        selected_rows.append(row)
         by_file[row["filepath"]].append(row)
+    if not selected_rows:
+        raise ValueError("No selected utterances passed alignment screening")
     stats = []
     for values in by_file.values():
         row = values[0]
@@ -335,11 +349,16 @@ def create_selected_manifest(workbook, output, log_path, summary_path):
     with output.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=FIELDS, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(selected_rows)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     exclusions = workbook.parent / "utterance_exclusions.csv"
     log = []
     counts = defaultdict(int)
+    alignment_counts = defaultdict(int)
+    for row, reason in alignment_drops:
+        log.append(f"SKIP utterance ({reason.replace('_', ' ')}): {row['filepath']}:{row.get('line', '?')}")
+        counts[reason] += 1
+        alignment_counts[reason] += 1
     if exclusions.exists():
         with exclusions.open(encoding="utf-8", newline="") as handle:
             for row in csv.DictReader(handle):
@@ -349,8 +368,9 @@ def create_selected_manifest(workbook, output, log_path, summary_path):
                     counts["untimestamped_utterances"] += row["reason"] == "no_timestamp"
     log_path.write_text("\n".join(log) + "\nSee participant_transcript_mapping.csv for recording exclusions.\n", encoding="utf-8")
     summary_path.parent.mkdir(parents=True, exist_ok=True)
-    summary_path.write_text(_summary(workbook, output, len(by_file), len(rows), len(by_file), stats, counts), encoding="utf-8")
-    return len(by_file), len(rows), len(log)
+    summary_path.write_text(_summary(workbook, output, len(by_file), len(rows), len(by_file), stats, counts)
+                            + "\nAlignment exclusions: " + repr(dict(alignment_counts)) + "\n", encoding="utf-8")
+    return len(by_file), len(selected_rows), len(log)
 
 
 def create_manifest(workbook, transcripts_dir, output, log_path, summary_path):

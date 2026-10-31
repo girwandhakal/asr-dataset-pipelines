@@ -18,22 +18,6 @@ class AlignmentTests(unittest.TestCase):
         self.assertEqual(alignment_reason(0, 6, "yes"), "long_clip_short_reference")
         self.assertEqual(alignment_reason(0, 1, "hello there"), "")
 
-    def test_adjacent_timestamp_overlap_is_excluded(self):
-        text = ("*INV:\tlisten . \x151000_1600\x15\n"
-                "*CHI:\thello . \x151500_2400\x15\n"
-                "*CHI:\tgoodbye . \x153000_3800\x15\n")
-        rows, skipped = read_utterances(text, "Corpus", "child.cha", "CHI")
-        self.assertEqual([row["utterance"] for row in rows], ["goodbye"])
-        self.assertEqual([row["reason"] for row in skipped],
-                         ["speaker_timestamp_overlap"])
-
-    def test_touching_timestamps_are_not_overlap(self):
-        text = ("*INV:\tlisten . \x151000_1600\x15\n"
-                "*CHI:\thello . \x151600_2400\x15\n")
-        rows, skipped = read_utterances(text, "Corpus", "child.cha", "CHI")
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(skipped, [])
-
     def test_manifest_logs_alignment_drops(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

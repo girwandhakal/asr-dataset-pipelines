@@ -74,16 +74,7 @@ def read_utterances(text, corpus, filepath, speaker):
             turns[-1][1] += " " + line.strip()
         else:
             turns.append([line_number, line])
-    speaker_turns = []
-    for index, (_, line) in enumerate(turns):
-        match = re.match(r"^\*([^:]+):\s*(.*)$", line)
-        if match and match.group(1) != speaker:
-            times = TIMESTAMP.findall(match.group(2))
-            if len(times) == 1:
-                adult_start, adult_end = (int(value) / 1000 for value in times[0])
-                if adult_end > adult_start:
-                    speaker_turns.append((index, adult_start, adult_end))
-    for index, (line_number, line) in enumerate(turns):
+    for line_number, line in turns:
         match = re.match(rf"^\*{re.escape(speaker)}:\s*(.*)$", line)
         if not match:
             continue
@@ -100,11 +91,6 @@ def read_utterances(text, corpus, filepath, speaker):
             reason = "empty_cleaned_reference"
         if not reason:
             reason = alignment_reason(start, end, cleaned)
-        if not reason:
-            adjacent = [turn for turn in speaker_turns if abs(turn[0] - index) == 1]
-            if any(max(start, adult_start) < min(end, adult_end)
-                   for _, adult_start, adult_end in adjacent):
-                reason = "speaker_timestamp_overlap"
         if reason:
             skipped.append(dict(corpus=corpus, filepath=filepath, line=line_number, reason=reason))
             continue
